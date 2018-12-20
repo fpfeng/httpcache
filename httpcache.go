@@ -151,23 +151,24 @@ func (t *Transport) RoundTrip(req *http.Request) (resp *http.Response, err error
 		transport = http.DefaultTransport
 	}
 
-	if cacheable && cachedResp != nil && err == nil {
+	if cacheable && err == nil && cachedResp != nil && cachedResp.StatusCode == http.StatusOK {
 		if t.MarkCachedResponses {
 			cachedResp.Header.Set(XFromCache, "1")
 		}
 		resp, err = cachedResp, nil
 	} else {
-			resp, err = transport.RoundTrip(req)
-			if err != nil {
-				return nil, err
-			}
+		resp, err = transport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		t.Cache.Delete(cacheKey)
 	}
 
 	if cacheable {
-			respBytes, err := httputil.DumpResponse(resp, true)
-			if err == nil {
-				t.Cache.Set(cacheKey, respBytes)
-			}
+		respBytes, err := httputil.DumpResponse(resp, true)
+		if err == nil {
+			t.Cache.Set(cacheKey, respBytes)
+		}
 	} else {
 		t.Cache.Delete(cacheKey)
 	}
@@ -341,10 +342,10 @@ func getEndToEndHeaders(respHeaders http.Header) []string {
 		"Keep-Alive":          struct{}{},
 		"Proxy-Authenticate":  struct{}{},
 		"Proxy-Authorization": struct{}{},
-		"Te":                struct{}{},
-		"Trailers":          struct{}{},
-		"Transfer-Encoding": struct{}{},
-		"Upgrade":           struct{}{},
+		"Te":                  struct{}{},
+		"Trailers":            struct{}{},
+		"Transfer-Encoding":   struct{}{},
+		"Upgrade":             struct{}{},
 	}
 
 	for _, extra := range strings.Split(respHeaders.Get("connection"), ",") {
