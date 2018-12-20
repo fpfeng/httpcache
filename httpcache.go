@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -156,97 +155,19 @@ func (t *Transport) RoundTrip(req *http.Request) (resp *http.Response, err error
 		if t.MarkCachedResponses {
 			cachedResp.Header.Set(XFromCache, "1")
 		}
-
-		if varyMatches(cachedResp, req) {
-			// Can only use cached value if the new request doesn't Vary significantly
-			freshness := getFreshness(cachedResp.Header, req.Header)
-			if freshness == fresh {
-				return cachedResp, nil
-			}
-
-			if freshness == stale {
-				var req2 *http.Request
-				// Add validators if caller hasn't already done so
-				etag := cachedResp.Header.Get("etag")
-				if etag != "" && req.Header.Get("etag") == "" {
-					req2 = cloneRequest(req)
-					req2.Header.Set("if-none-match", etag)
-				}
-				lastModified := cachedResp.Header.Get("last-modified")
-				if lastModified != "" && req.Header.Get("last-modified") == "" {
-					if req2 == nil {
-						req2 = cloneRequest(req)
-					}
-					req2.Header.Set("if-modified-since", lastModified)
-				}
-				if req2 != nil {
-					req = req2
-				}
-			}
-		}
-
-		resp, err = transport.RoundTrip(req)
-		if err == nil && req.Method == "GET" && resp.StatusCode == http.StatusNotModified {
-			// Replace the 304 response with the one from cache, but update with some new headers
-			endToEndHeaders := getEndToEndHeaders(resp.Header)
-			for _, header := range endToEndHeaders {
-				cachedResp.Header[header] = resp.Header[header]
-			}
-			resp = cachedResp
-		} else if (err != nil || (cachedResp != nil && resp.StatusCode >= 500)) &&
-			req.Method == "GET" && canStaleOnError(cachedResp.Header, req.Header) {
-			// In case of transport failure and stale-if-error activated, returns cached content
-			// when available
-			return cachedResp, nil
-		} else {
-			if err != nil || resp.StatusCode != http.StatusOK {
-				t.Cache.Delete(cacheKey)
-			}
-			if err != nil {
-				return nil, err
-			}
-		}
+		resp, err = cachedResp, nil
 	} else {
-		reqCacheControl := parseCacheControl(req.Header)
-		if _, ok := reqCacheControl["only-if-cached"]; ok {
-			resp = newGatewayTimeoutResponse(req)
-		} else {
 			resp, err = transport.RoundTrip(req)
 			if err != nil {
 				return nil, err
 			}
-		}
 	}
 
-	if cacheable && canStore(parseCacheControl(req.Header), parseCacheControl(resp.Header)) {
-		for _, varyKey := range headerAllCommaSepValues(resp.Header, "vary") {
-			varyKey = http.CanonicalHeaderKey(varyKey)
-			fakeHeader := "X-Varied-" + varyKey
-			reqValue := req.Header.Get(varyKey)
-			if reqValue != "" {
-				resp.Header.Set(fakeHeader, reqValue)
-			}
-		}
-		switch req.Method {
-		case "GET":
-			// Delay caching until EOF is reached.
-			resp.Body = &cachingReadCloser{
-				R: resp.Body,
-				OnEOF: func(r io.Reader) {
-					resp := *resp
-					resp.Body = ioutil.NopCloser(r)
-					respBytes, err := httputil.DumpResponse(&resp, true)
-					if err == nil {
-						t.Cache.Set(cacheKey, respBytes)
-					}
-				},
-			}
-		default:
+	if cacheable {
 			respBytes, err := httputil.DumpResponse(resp, true)
 			if err == nil {
 				t.Cache.Set(cacheKey, respBytes)
 			}
-		}
 	} else {
 		t.Cache.Delete(cacheKey)
 	}
